@@ -12,6 +12,26 @@ def ET(vec):
 def get_values(var,Events):
     return ak.flatten(Events[var],axis=None)
 
+def get_p4(obj):
+    return ak.zip(
+        {
+            "pt": obj.PT,
+            "eta": obj.Eta,
+            "phi": obj.Phi,
+            "mass": obj.Mass,
+        },
+        with_name="Momentum4D",
+    )
+
+def get_p2(obj):
+    return ak.zip(
+        {
+            "pt": obj.MET,
+            "phi": obj.Phi,
+        },
+        with_name="Momentum2D",
+    )
+
 def fill_hist(var,nbins,bmin,bmax,label,Events):
     h = (
         hist.Hist.new
@@ -97,12 +117,13 @@ def histogram(filename, helper):
     events = events[mask2]
 
     # Dijet
-    events["Dijet"] = events.FatJet[:,0]+events.FatJet[:,1]
+    events["Dijet"] = get_p4(events.FatJet[:,0]) + get_p4(events.FatJet[:,1])
 
     # transverse mass calculation
+    MET = get_p2(events.MissingET)
     E1 = ET(events.Dijet)
-    E2 = events.MissingET.MET
-    MTsq = (E1+E2)**2-(events.Dijet.px+events.MissingET.px)**2-(events.Dijet.py+events.MissingET.py)**2
+    E2 = MET.pt
+    MTsq = (E1+E2)**2-(events.Dijet.px+MET.px)**2-(events.Dijet.py+MET.py)**2
     MTsq = MTsq.to_numpy(allow_missing=True)
     events["MT"] = np.sqrt(MTsq, where=MTsq>=0)
 
@@ -135,8 +156,8 @@ def histogram(filename, helper):
     events["DeltaEta"] = np.abs(events["Jet2_eta"] - events["Jet1_eta"])
     events["DeltaPhi"] = np.abs(normalize_angle(events["Jet1_phi"] - events["Jet2_phi"]))
 
-    events["DeltaPhi_MET_Jet1"] = np.abs(normalize_angle(events.MissingET.phi - events["Jet1_phi"]))
-    events["DeltaPhi_MET_Jet2"] = np.abs(normalize_angle(events.MissingET.phi - events["Jet2_phi"]))
+    events["DeltaPhi_MET_Jet1"] = np.abs(normalize_angle(MET.phi - events["Jet1_phi"]))
+    events["DeltaPhi_MET_Jet2"] = np.abs(normalize_angle(MET.phi - events["Jet2_phi"]))
 
     # add substructure quantities
     events["Jet1_girth"] = calculate_girth(events["Jet1"])
