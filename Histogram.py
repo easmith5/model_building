@@ -83,6 +83,13 @@ def calc_axis1_axis2(jet):
 
     return axis1, axis2
 
+def getTau(events):
+    for j in ['Jet1', 'Jet2']:
+        # we have tau1 to tau5
+        for i in range(1,6):
+            events[j+'_tau{:d}'.format(i)] = events[j].Tau_5[:,i-1]
+            if i != 1: events[j+'_tau{:d}{:d}'.format(i, i-1)] = events[j+'_tau{:d}'.format(i)] / events[j+'_tau{:d}'.format(i-1)]
+
 
 def histogram(filename, helper):
     Events = load_events(filename, with_constituents=True)
@@ -145,6 +152,12 @@ def histogram(filename, helper):
     events["Jet2_ptD"] = calculate_ptD(events["Jet2"])
     events["Jet1_majoraxis"], events["Jet1_minoraxis"] = calc_axis1_axis2(events["Jet1"])
     events["Jet2_majoraxis"], events["Jet2_minoraxis"] = calc_axis1_axis2(events["Jet2"])
+    events["Jet1_sdmass"] = events["Jet1"].SoftDroppedJet.mass
+    events["Jet2_sdmass"] = events["Jet2"].SoftDroppedJet.mass
+    events["Jet1_sdpt"] = events["Jet1"].SoftDroppedJet.pt
+    events["Jet2_sdpt"] = events["Jet2"].SoftDroppedJet.pt
+
+    getTau(events)
 
     # Stable inv frac
     dark_hadron_ids = helper.darkHadronFinalIDs
@@ -182,9 +195,9 @@ def histogram(filename, helper):
 
     hist_dict = {
         "Jet_mt": fill_hist("MT",25,0,1500,r"$m_{\text{T}}$ [GeV]",Events),
-        "Dijet_pt": fill_hist("Dijet_pt",50,0,1000,r"$p_{\text{T}}(JJ)$ [GeV]",Events),
-        "Jet1_pt": fill_hist("Jet1_pt",50,0,1000,r"$p_{\text{T}}(J_1)$ [GeV]",Events),
-        "Jet2_pt": fill_hist("Jet2_pt",50,0,1000,r"$p_{\text{T}}(J_2)$ [GeV]",Events),
+        "Dijet_pt": fill_hist("Dijet_pt",50,0,1000,r"$p_{\text{T,JJ}}$ [GeV]",Events),
+        "Jet1_pt": fill_hist("Jet1_pt",50,0,1000,r"$p_{\text{T,J_1}}$ [GeV]",Events),
+        "Jet2_pt": fill_hist("Jet2_pt",50,0,1000,r"$p_{\text{T,J_2}}$ [GeV]",Events),
         "MET": fill_hist("MET",50,0,1000,r"$p_{\text{T}}^{\text{miss}}$ [GeV]",Events),
         "Dijet_eta": fill_hist("Dijet_eta",50,-10,10,r"$\eta_{JJ}$ [GeV]",Events),
         "Jet1_eta": fill_hist("Jet1_eta",50,-6,6,r"$\eta_{J_1}$",Events),
@@ -195,6 +208,10 @@ def histogram(filename, helper):
         "Dijet_mass": fill_hist("Dijet_mass",50,0,2300,r"$m_{JJ}$ [GeV]",Events),
         "Jet1_mass": fill_hist("Jet1_mass",50,0,250,r"$m_{J_1}$ [GeV]",Events),
         "Jet2_mass": fill_hist("Jet2_mass",50,0,250,r"$m_{J_2}$ [GeV]",Events),
+        "Jet1_sdmass": fill_hist("Jet1_sdmass",50,0,250,r"Soft Drop $m_{J_1}$ [GeV]",Events),
+        "Jet2_sdmass": fill_hist("Jet2_sdmass",50,0,250,r"Soft Drop $m_{J_2}$ [GeV]",Events),
+        "Jet1_sdpt" : fill_hist("Jet1_sdpt",50,0,1000,r"Soft Drop $p_{\text{T,J_1}}$ [GeV]",Events),
+        "Jet2_sdpt" : fill_hist("Jet2_sdpt",50,0,1000,r"Soft Drop $p_{\text{T, J_2}}$ [GeV]",Events),
         "DeltaEta": fill_hist("DeltaEta",35,0,8.0,r"$\Delta\eta(JJ)$",Events),
         "DeltaPhi": fill_hist("DeltaPhi",20,0,3.15,r"$\Delta\phi(JJ)$",Events),
         "DeltaPhi_MET_Jet1": fill_hist("DeltaPhi_MET_Jet1",25,0,3.15,r"$\Delta\phi(J_1,p_{\text{T}}^{\text{miss}})$",Events),
@@ -209,6 +226,12 @@ def histogram(filename, helper):
         "Jet2_minor": fill_hist("Jet2_minoraxis",50,0,0.5,r"$\sigma_{\text{minor}}(J_2)$",Events),
         "stable_invisible_fraction": fill_hist("stable_invisible_fraction",25,0,1,r"$\overline{r}_{\text{inv}}$",Events)
     }
+
+    for t in events.fields:
+        if 'tau' not in t: continue
+        l = t.split('_')
+        label = l[1].replace('tau', '$\\tau_{')+','+l[0].replace('et', '_')+'}$'
+        hist_dict[t] = fill_hist(t,40,0,1,label,Events)
 
     # Saving the histograms
     with open("Hists.pkl", "wb") as out:
