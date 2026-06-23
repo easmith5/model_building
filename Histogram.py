@@ -5,6 +5,7 @@ import hist
 import matplotlib as mpl
 from coffea.nanoevents import NanoEventsFactory
 from common import load_events
+import fastjet
 
 def ET(vec):
     return np.sqrt(vec.px**2+vec.py**2+vec.mass**2)
@@ -78,6 +79,30 @@ def getTau(events):
             events[j+'_tau{:d}'.format(i)] = events[j].Tau_5[:,i-1]
             if i != 1: events[j+'_tau{:d}{:d}'.format(i, i-1)] = events[j+'_tau{:d}'.format(i)] / events[j+'_tau{:d}'.format(i-1)]
     return events
+
+def getLundMultiplicity(jet, kt_cut):
+    # Re-cluster the constituents with Cambridge/Aachen.
+    # Using a very large R guarantees a single C/A jet containing all constituents
+    jet_def = fastjet.JetDefinition(fastjet.cambridge_algorithm, 1000.0)
+    cs = fastjet.ClusterSequence(jet.Constituents, jet_def)
+
+    # Retrieve the primary Lund-plane declusterings for the single jet and apply kt cut
+    lund = cs.exclusive_jets_lund_declusterings(njets=1)
+
+    kt_values = ak.flatten(lund)[:]["kt"]
+    mult = ak.sum(kt_values > kt_cut, axis=-1)
+
+    return mult
+
+def getECF(jet, npointECF):
+    # Re-cluster the constituents with Cambridge/Aachen.
+    # Using a very large R guarantees a single C/A jet containing all constituents, which is the standard for Lund declustering
+    jet_def = fastjet.JetDefinition(fastjet.cambridge_algorithm, 1000.0)
+    cs = fastjet.ClusterSequence(jet.Constituents, jet_def)
+
+    ecf = cs.exclusive_jets_energy_correlator(njets=1, npoint=npointECF, beta=1)
+
+    return ecf
 
 def calc_rinv(events, helper, debug):
     pid = events.GenParticle["PID"]
@@ -247,6 +272,8 @@ def histogram(filename, helper, with_constituents=True, debug=False):
     events["DeltaPhi_MET_Jet2"] = np.abs(normalize_angle(events.MissingET.phi - events["Jet2_phi"]))
 
     # add substructure quantities
+    kt_cuts = [1,2,5,10]
+    n_ecf = [2,3]
     if with_constituents:
         events["Jet1_girth"] = calculate_girth(events["Jet1"])
         events["Jet2_girth"] = calculate_girth(events["Jet2"])
@@ -254,6 +281,13 @@ def histogram(filename, helper, with_constituents=True, debug=False):
         events["Jet2_ptD"] = calculate_ptD(events["Jet2"])
         events["Jet1_majoraxis"], events["Jet1_minoraxis"] = calc_axis1_axis2(events["Jet1"])
         events["Jet2_majoraxis"], events["Jet2_minoraxis"] = calc_axis1_axis2(events["Jet2"])
+        for k in kt_cuts:
+            events[f"Jet1_lundMult{k}"] = getLundMultiplicity(events["Jet1"], k)
+            events[f"Jet2_lundMult{k}"] = getLundMultiplicity(events["Jet2"], k)
+        for n in n_ecf:
+            events[f"Jet1_ECF{n}"] = getECF(events["Jet1"], n)
+            events[f"Jet2_ECF{n}"] = getECF(events["Jet2"], n)
+
     events["Jet1_sdmass"] = events["Jet1"].SoftDroppedJet.mass
     events["Jet2_sdmass"] = events["Jet2"].SoftDroppedJet.mass
     events["Jet1_sdpt"] = events["Jet1"].SoftDroppedJet.pt
@@ -325,6 +359,19 @@ def histogram(filename, helper, with_constituents=True, debug=False):
             "Jet1_minor": fill_hist("Jet1_minoraxis",50,0,0.5,r"$\sigma_{\text{minor}}(J_1)$"),
             "Jet2_minor": fill_hist("Jet2_minoraxis",50,0,0.5,r"$\sigma_{\text{minor}}(J_2)$"),
         })
+
+        for f in events.fields:
+            if 'lundMult' not in f: continue
+            l = f.split('_')
+            label = l[1].replace('lundMult', 'Primary Lund Multiplicity $k_T>')+','+l[0].replace('et', '_')+'$'
+            hist_dict[f] = fill_hist(f,12,0,12,label)
+
+        for f in events.fields:
+            if 'ECF' not in f: continue
+            l = f.split('_')
+            label = l[1]+',$'+l[0].replace('et', '_')+'$'
+            hist_dict[f] = fill_hist(f,30,0,0.3,label)
+
     hist_dict.update({
         "Jet1_sdmass": fill_hist("Jet1_sdmass",50,0,250,r"$m_{\text{SD}}(J_1)$ [GeV]"),
         "Jet2_sdmass": fill_hist("Jet2_sdmass",50,0,250,r"$m_{\text{SD}}(J_2)$ [GeV]"),
