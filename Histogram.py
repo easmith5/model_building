@@ -92,6 +92,39 @@ def getECF(cluster_seq, npointECF):
     ecf = cluster_seq.exclusive_jets_energy_correlator(njets=1, npoint=npointECF, beta=1)
     return ecf
 
+def ak_isin(arr, allowed):
+    arr_ak = ak.Array(arr)
+    allowed_np = np.asarray(list(allowed))
+
+    def action(layout, **kwargs):
+        if layout.is_numpy:
+            data = ak.to_numpy(ak.Array(layout))
+            return ak.contents.NumpyArray(np.isin(data, allowed_np))
+        return None
+
+    return ak.transform(action, arr_ak)
+
+def mask_pion(coll):
+    return (np.abs(coll) % 10) == 1
+
+def mask_rho(coll):
+    return (np.abs(coll) % 10) == 3
+
+# split B particles into groups based on the A particle to which they are closest
+def partition_particles(A, B):
+    # compute delta R for all pairs
+    dr = A.metric_table(B)
+    # index of the nearest A for each B; keepdims -> (events, 1, n_B)
+    nearest = ak.argmin(dr, axis=1, keepdims=True)
+    # A-row index at every cell, shape (events, n_A, n_B)
+    a_idx = ak.local_index(dr, axis=1)
+    # True where this A is the closest one to that B
+    mask = a_idx == nearest
+    # broadcast B across the A axis, then filter with the mask
+    B_bcast = ak.broadcast_arrays(dr, B[:, np.newaxis])[1]
+    grouped = B_bcast[mask] # -> (events, n_A, var)
+    return grouped
+
 def calc_rinv(events, helper, meta_dict, debug):
     pid = events.GenParticle["PID"]
 
@@ -111,17 +144,12 @@ def calc_rinv(events, helper, meta_dict, debug):
         dprint(f'{name:<30}',ak.sum(arr, axis=1).to_numpy().tolist())
 
     # Boolean array of whether a particle is dark
-    is_dark = ak.zeros_like(pid)
-    for dhid in dark_hadron_ids:
-        is_dark = is_dark | (np.abs(pid)==dhid)
-    is_dark = is_dark==1
+    is_dark = ak_isin(np.abs(pid), dark_hadron_ids)
     printer('is_dark',is_dark)
 
     # Boolean array of whether a particle is dark
-    is_dark_final = ak.zeros_like(pid)
-    for dhid in dark_hadron_final_ids:
-        is_dark_final = is_dark_final | (np.abs(pid)==dhid)
-    is_dark_final = is_dark_final==1
+    # final: any dark hadron that doesn't decay to another dark hadron (predefined list from model)
+    is_dark_final = ak_isin(np.abs(pid), dark_hadron_final_ids)
     printer('is_dark_final',is_dark_final)
 
     # exclude dark hadrons resulting from mixed decay of another dark hadron
@@ -136,6 +164,16 @@ def calc_rinv(events, helper, meta_dict, debug):
     m2_dark = (m2!=-1) & (is_dark[m2])
     m2_d1_sm = (d1[m2]!=-1) & (~is_dark[d1[m2]])
     m2_d2_sm = (d2[m2]!=-1) & (~is_dark[d2[m2]])
+
+    # Boolean array of whether a particle is dark
+    # initial: any dark hadron not resulting from another dark hadron
+    is_dark_initial = (is_dark) & (~m1_dark) & (~m2_dark)
+    printer('is_dark_initial',is_dark_initial)
+    is_dark_initial_pion = (is_dark_initial) & mask_pion(pid)
+    is_dark_initial_rho = (is_dark_initial) & mask_rho(pid)
+    events['dark_pion_initial_pt'] = events.GenParticle["PT"][is_dark_initial_pion]
+    events['dark_rho_initial_pt'] = events.GenParticle["PT"][is_dark_initial_rho]
+    events['dark_rho_pion_initial_pt_ratio'] = ak.mean(events['dark_rho_initial_pt'], axis=1) / ak.mean(events['dark_pion_initial_pt'], axis=1)
 
     def make_table(mask):
         table = ak.zip({
@@ -163,12 +201,15 @@ def calc_rinv(events, helper, meta_dict, debug):
         })
         return table
 
+    def print_table(table):
+        import pandas as pd
+        with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None, 'display.max_colwidth', None):
+            print(ak.to_dataframe(table))
+
     # for debugging, show only dark hadron entries
     if debug:
         table_debug = make_table(mask=is_dark)
-        import pandas as pd
-        with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None, 'display.max_colwidth', None):
-            dprint(ak.to_pandas(table_debug))
+        print_table(table_debug)
 
     m1_dark_d_sm = m1_dark & (m1_d1_sm | m1_d2_sm)
     m2_dark_d_sm = m2_dark & (m2_d1_sm | m2_d2_sm)
@@ -185,12 +226,46 @@ def calc_rinv(events, helper, meta_dict, debug):
     dark_mother_sm_sibling = dark_mother_sm_sibling==1
     printer('dark_mother_sm_sibling',dark_mother_sm_sibling)
 
+    # counting in categories of decay behavior
+    events["n_pion"] = ak.sum(is_dark_initial_pion, axis=1)
+    maybe_pion_stable = (d1==-1) | ak_isin(np.abs(pid[d1]), stable_particle_ids)
+    initial_pion_stable = is_dark_initial_pion & maybe_pion_stable
+    events["n_pion_stable"] = ak.sum(initial_pion_stable, axis=1)
+    initial_pion_unstable = is_dark_initial_pion & ~maybe_pion_stable
+    events["n_pion_unstable"] = ak.sum(initial_pion_unstable, axis=1)
+    events["n_rho"] = ak.sum(is_dark_initial_rho, axis=1)
+    maybe_rho_pipi = (is_dark[d1]) & (is_dark[d2])
+    initial_rho_pipi = is_dark_initial_rho & maybe_rho_pipi
+    events["n_rho_pipi"] = ak.sum(initial_rho_pipi, axis=1)
+    maybe_rho_3body = ak_isin(np.abs(pid[d1]), dark_hadron_ids) ^ ak_isin(np.abs(pid[d2]), dark_hadron_ids)
+    initial_rho_3body = is_dark_initial_rho & maybe_rho_3body
+    events["n_rho_3body"] = ak.sum(initial_rho_3body, axis=1)
+    initial_rho_SM = (is_dark_initial_rho) & (~maybe_rho_pipi) & (~maybe_rho_3body)
+    events["n_rho_SM"] = ak.count(pid[initial_rho_SM], axis=1)
+
+    masks = {
+        'is_dark_initial_pion': is_dark_initial_pion,
+        'initial_pion_stable': initial_pion_stable,
+        'initial_pion_unstable': initial_pion_unstable,
+        'is_dark_initial_rho': is_dark_initial_rho,
+        'initial_rho_pipi': initial_rho_pipi,
+        'initial_rho_3body': initial_rho_3body,
+        'initial_rho_SM': initial_rho_SM,
+    }
+    if debug:
+        for mname,mask in masks.items():
+            table_debug = make_table(mask=mask)
+            import pandas as pd
+            with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None, 'display.max_colwidth', None):
+                dprint(mname)
+                dprint(ak.to_dataframe(table_debug))
+
     # quick diversion here to measure alpha = E_pi / m_rho for 3-body decays
     is_dark_3body = is_dark_final & dark_mother_sm_sibling
     if ak.any(is_dark_3body):
         pi_3body = events.GenParticle[is_dark_3body]
         rho_3body = events.GenParticle[m1[is_dark_3body]]
-        pi_3body_restframe = pi_3body.boostCM_of_beta3(rho_3body.to_beta3())
+        pi_3body_restframe = pi_3body.boostCM_of(rho_3body)
         E_pi_3body = pi_3body_restframe.energy
         m_rho_3body = rho_3body.mass
         alpha_3body = E_pi_3body/m_rho_3body
@@ -201,18 +276,66 @@ def calc_rinv(events, helper, meta_dict, debug):
         events["alpha_3body"] = ak.Array([0])
         meta_dict["alpha_3body"] = fill_stats(events["alpha_3body"])
 
+    def make_small_table(coll):
+        table = ak.zip({
+            "fUniqueID": coll["fUniqueID"],
+            "PID": coll["PID"],
+            "M1": coll["M1"],
+            "M2": coll["M2"],
+            "D1": coll["D1"],
+            "D2": coll["D2"],
+            "PT": coll["PT"],
+        })
+        return table
+
+    # sanity check between Delphes and offline selections of initial dark hadrons
+    events["DHinitial"] = events["GenParticle"][is_dark_initial_rho | is_dark_initial_pion]
+    if debug:
+        print("DarkHadronCandidate")
+        print_table(make_small_table(events["DarkHadronCandidate"]))
+        print("GenParticle is_dark_initial")
+        print_table(make_small_table(events["DHinitial"]))
+
+    # find initial dark quarks
+    dark_quark_ids = helper.darkQuarkIDs
+    dprint('dark_quark_ids',dark_quark_ids)
+    dark_parton_ids = helper.darkPartonIDs
+    dprint('dark_parton_ids',dark_parton_ids)
+    is_dark_quark = ak_isin(np.abs(pid), dark_quark_ids)
+    is_dark_parton = ak_isin(np.abs(pid), dark_parton_ids)
+    m1_dark_parton = (m1!=-1) & (is_dark_parton[m1])
+    m2_dark_parton = (m2!=-1) & (is_dark_parton[m2])
+    is_dark_quark_initial = is_dark_quark & ~m1_dark_parton & ~m2_dark_parton
+    dark_quark_initial = events["GenParticle"][is_dark_quark_initial]
+
+    # for each dark hadron, find closest dark quark, and group by assignment
+    events["DHgrouped"] = partition_particles(dark_quark_initial, events["DHinitial"])
+    # create frames: sum dark hadron four-momenta (grouped by dark quarks)
+    events["DQframe"] = ak.sum(events["DHgrouped"], axis=2)
+    # projections
+    proj_rho = proj(events, "DQframe", ["DHgrouped", mask_rho(events["DHgrouped"].PID)])
+    E_rho = ak.sum(ak.flatten(proj_rho, axis=2), axis=1) / ak.sum(is_dark_initial_rho, axis=1)
+    proj_pion = proj(events, "DQframe", ["DHgrouped", mask_pion(events["DHgrouped"].PID)])
+    E_pion = ak.sum(ak.flatten(proj_pion, axis=2), axis=1) / ak.sum(is_dark_initial_pion, axis=1)
+    kappa = E_rho / E_pion
+    meta_dict["kappa"] = fill_stats(kappa)
+    print(f"Average kappa = {meta_dict['kappa']['mean']:.3} ({meta_dict['kappa']['stdev']:.3})")
+    events["kappa"] = kappa
+
     is_dark_final = is_dark_final & ~dark_mother_sm_sibling
     printer('is_dark_final',is_dark_final)
 
     # PIDs of dark daughter
-    dark_final_daughter = pid[d1[is_dark_final]]
-    is_dark_final_daughter = ak.zeros_like(dark_final_daughter) | (d1[is_dark_final]==-1)
+    is_dark_daughter = (d1==-1) | ak_isin(np.abs(pid[d1]), stable_particle_ids)
+    printer('is_dark_daughter',is_dark_daughter)
+
+    is_dark_final_daughter = is_dark_final & is_dark_daughter
     printer('is_dark_final_daughter',is_dark_final_daughter)
 
-    for dsid in stable_particle_ids:
-        printer(f'dark_final_daughter=={dsid}', (np.abs(dark_final_daughter)==dsid))
-        is_dark_final_daughter = is_dark_final_daughter | (np.abs(dark_final_daughter)==dsid)
-    printer('is_dark_final_daughter',is_dark_final_daughter)
+    # another sanity check
+    if debug:
+        print("GenParticle is_dark_final_daughter")
+        print_table(make_small_table(events["GenParticle"][is_dark_final_daughter]))
 
     numer = ak.sum(is_dark_final_daughter, axis=1).to_numpy()
     denom = ak.sum(is_dark_final, axis=1).to_numpy()
@@ -232,8 +355,13 @@ def calc_mt(jet, met):
     MTsq = MTsq.to_numpy(allow_missing=True)
     return np.sqrt(MTsq, where=MTsq>=0)
 
-def proj(events, jet, const):
-    return events[jet, const].dot(events[jet]) / events[jet].mass
+def proj(events, a, b):
+    if not isinstance(a, list): a = [a]
+    if not isinstance(b, list): b = [b]
+    return events[tuple(b)].dot(events[tuple(a)]) / events[tuple(a)].mass
+
+def proj_jet(events, jet, const):
+    return proj(events, jet, [jet, const])
 
 def jet_const_cumsum(array):
     counts = ak.num(array, axis=-1)
@@ -265,7 +393,6 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
 
     # output dictionary with histograms and metadata
     output = {}
-    output["model"] = helper.metadata()
     meta_dict = {}
 
     # get rid of None Events
@@ -344,7 +471,8 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
     events["mMediator"] = meds_final.mass
 
     # Add the invisible fraction to the events
-    print(f"Predicted rinv = {output['model'].get('rinv_3body', output.get('rinvpred_3body', output['model'].get('rinv',output['model'].get('rinvpred', -1)))):.5}")
+    model = helper.metadata()
+    print(f"Predicted rinv = {model.get('rinv_3body', model.get('rinvpred_3body', model.get('rinv',model.get('rinvpred', -1)))):.5}")
     calc_rinv(events, helper, meta_dict, debug)
 
     # dark parton/hadron jets and corresponding visible and invisible+visible jets
@@ -361,10 +489,7 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
         # per-jet calculation of invisible fraction based on momentum projection
         # pick out dark hadron constituents (stability already checked in Delphes)
         dark_hadron_final_ids = helper.darkHadronFinalIDs
-        is_dark = ak.zeros_like(events["DHIVJet12"].Constituents.PID)
-        for dhid in dark_hadron_final_ids:
-            is_dark = is_dark | (np.abs(events["DHIVJet12"].Constituents.PID)==dhid)
-        is_dark = is_dark==1
+        is_dark = ak_isin(np.abs(events["DHIVJet12"].Constituents.PID), dark_hadron_final_ids)
         events["DHIVJet12", "DHConstituents"] = events["DHIVJet12", "Constituents"][is_dark]
 
         def fill_DHIVJet_rinv(numer, denom, suff):
@@ -388,8 +513,8 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
             )
 
         # project constituent momentum onto jet axis
-        proj_numer = proj(events, "DHIVJet12", "DHConstituents")
-        proj_denom = proj(events, "DHIVJet12", "Constituents")
+        proj_numer = proj_jet(events, "DHIVJet12", "DHConstituents")
+        proj_denom = proj_jet(events, "DHIVJet12", "Constituents")
         fill_DHIVJet_rinv(proj_numer, proj_denom, 'proj')
 
         # alternative: use scalar pT sum (related to "jet shape" below)
@@ -524,6 +649,17 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
     hist_dict.update(chain.from_iterable([
         fill_hist("stable_invisible_fraction",25,0,1,r"$r_{\text{inv}}^{\text{gen}}$"),
         fill_hist("alpha_3body",50,0,1,r"$\alpha_{\text{3body}}$"),
+        fill_hist("kappa",50,0,5,r"$\kappa$"),
+        fill_hist("dark_pion_initial_pt",50,0,mmed*0.5,r"$p_{\text{T}}(\pi_{\text{initial}})$"),
+        fill_hist("dark_rho_initial_pt",50,0,mmed*0.5,r"$p_{\text{T}}(\rho_{\text{initial}})$"),
+        fill_hist("dark_rho_pion_initial_pt_ratio",50,0,4,r"$\langle p_{\text{T}}(\rho_{\text{initial}}) \rangle / \langle p_{\text{T}}(\pi_{\text{initial}}) \rangle$"),
+        fill_hist("n_pion",20,0,20,r"$n_{\pi}$"),
+        fill_hist("n_pion_stable",20,0,20,r"$n_{\pi}^{\text{stable}}$"),
+        fill_hist("n_pion_unstable",20,0,20,r"$n_{\pi}^{\text{unstable}}$"),
+        fill_hist("n_rho",20,0,20,r"$n_{\rho}$"),
+        fill_hist("n_rho_pipi",20,0,20,r"$n_{\rho}^{\pi\pi}$"),
+        fill_hist("n_rho_3body",20,0,20,r"$n_{\rho}^{\text{3body}}$"),
+        fill_hist("n_rho_SM",20,0,20,r"$n_{\rho}^{\text{SM}}$"),
         fill_hist("mMediator",50,0,mmed*1.5,r"$m_{\text{mediator}}$ [GeV]"),
         fill_hist("DPJet12_pt",50,0,mmed*0.75,r"$p_{\text{T}}(J_{JETIND}^{\text{DP}})$ [GeV]"),
         fill_hist("DHJet12_pt",50,0,mmed*0.75,r"$p_{\text{T}}(J_{JETIND}^{\text{DH}})$ [GeV]"),
@@ -557,14 +693,15 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
     # finish output dictionary
     output["hist"] = hist_dict
     output["analysis"] = meta_dict
+    output["model"] = {}
 
-    # alternative 3body rinv calculation using alpha measured from Pythia
+    # alternative 3body rinv calculation using alpha and kappa measured from Pythia
     if helper.mrho < 2*helper.mpi:
         from svjHelper import fcdc_rinv_3body, fcdc_rinv_3body_simp
         if helper.Ns is not None:
-            output["model"]['rinvpred_3body_gen'] = fcdc_rinv_3body(Nf=helper.Nf, Ns=helper.Ns, mrho=helper.mrho, mpi=helper.mpi, pvector=helper.pvector, alpha=meta_dict['alpha_3body']['mean'])
+            output["model"]['rinvpred_3body_gen'] = fcdc_rinv_3body(Nf=helper.Nf, Ns=helper.Ns, mrho=helper.mrho, mpi=helper.mpi, pvector=helper.pvector, alpha=meta_dict['alpha_3body']['mean'], kappa=meta_dict['kappa']['mean'])
         else:
-            output["model"]['rinv_3body_gen'] = fcdc_rinv_3body_simp(rinv=helper.rinv, Nf=helper.Nf, mrho=helper.mrho, mpi=helper.mpi, pvector=helper.pvector, alpha=meta_dict['alpha_3body']['mean'])
+            output["model"]['rinv_3body_gen'] = fcdc_rinv_3body_simp(rinv=helper.rinv, Nf=helper.Nf, mrho=helper.mrho, mpi=helper.mpi, pvector=helper.pvector, alpha=meta_dict['alpha_3body']['mean'], kappa=meta_dict['kappa']['mean'])
 
     # Saving the histograms
     with open("Hists.pkl", "wb") as out:

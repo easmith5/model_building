@@ -690,15 +690,7 @@ module PdgCodeFilter DarkPartonFilter {
   set LastDark 1
   set Invert 1
 
-  add PdgCode 4900101
-  add PdgCode 4900102
-  add PdgCode 4900103
-  add PdgCode 4900104
-  add PdgCode 4900105
-  add PdgCode 4900106
-  add PdgCode 4900107
-  add PdgCode 4900108
-  add PdgCode 4900021
+$HVDarkPartonFilter
 }
 
 ############################

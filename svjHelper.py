@@ -36,10 +36,12 @@ def gchi_lhcdm(*, gDM, Nc, Nf):
     return gDM/math.sqrt(Nc*Nf)
 
 # rinv calculation for FCDC complete model
-# neglects eta prime meson: assumed to be heavy (from anomaly), therefore rarely produced
-def fcdc_rinv(*, Nf, Ns):
+# by default, neglect eta prime meson: assumed to be heavy (from anomaly), therefore rarely produced
+def fcdc_rinv(*, Nf, Ns, keepEta1=False):
     Nu = Nf-Ns
-    rinv = (Nf*(Nf-1) - Nu*(Nu-1)) / (Nf**2 - 1)
+    Nstable = Nf*(Nf-1) - Nu*(Nu-1)
+    Npi = Nf**2 - (1-int(keepEta1)) # neglect eta prime
+    rinv = Nstable/Npi
     return rinv
 
 # create a single fcdc config using input numbers
@@ -137,38 +139,44 @@ def alpha_mean(*, mrho, mpi):
     alpha = np.mean(alphas)
     return alpha
 
-def fcdc_rinv_3body(*, Nf, Ns, mrho, mpi, pvector, alpha=None):
+def fcdc_rinv_3body(*, Nf, Ns, mrho, mpi, pvector, alpha=None, kappa=None, keepEta1=False):
     # off-diagonal pi w/ no FCDC: stable
     # off-diagonal rho w/ no FCDC: decay to pi q qbar (pi stable)
     # all others decay to q qbar (mass insertion or democratic)
 
     Nu = Nf-Ns
     Nstable = Nf*(Nf-1) - Nu*(Nu-1)
-    Npi = Nf**2-1 # neglect eta prime
+    Npi = Nf**2 - (1-int(keepEta1)) # neglect eta prime
     Nrho = Nf**2
 
     if alpha is None:
         alpha = alpha_mean(mrho=mrho, mpi=mpi)
 
+    if kappa is None:
+        kappa = mrho/mpi
+
     numer_pi = (1-pvector)*Nstable
-    numer_rho = alpha*pvector*Nstable
+    numer_rho = alpha*kappa*pvector*Nstable
     denom_pi = (1-pvector)*Npi
-    denom_rho = pvector*Nrho
+    denom_rho = kappa*pvector*Nrho
 
     rinv = (numer_pi + numer_rho) / (denom_pi + denom_rho)
     return rinv
 
-def fcdc_rinv_3body_simp(*, rinv, Nf, mrho, mpi, pvector, alpha=None):
-    Npi = Nf**2-1 # neglect eta prime
+def fcdc_rinv_3body_simp(*, rinv, Nf, mrho, mpi, pvector, alpha=None, kappa=None, keepEta1=False):
+    Npi = Nf**2 - (1-int(keepEta1)) # neglect eta prime
     Nrho = Nf**2
 
     if alpha is None:
         alpha = alpha_mean(mrho=mrho, mpi=mpi)
 
+    if kappa is None:
+        kappa = mrho/mpi
+
     numer_pi = (1-pvector)*rinv*Npi
-    numer_rho = alpha*pvector*rinv*Nrho
+    numer_rho = alpha*kappa*pvector*rinv*Nrho
     denom_pi = (1-pvector)*Npi
-    denom_rho = pvector*Nrho
+    denom_rho = kappa*pvector*Nrho
 
     rinv_eff = (numer_pi + numer_rho) / (denom_pi + denom_rho)
     return rinv_eff
@@ -279,12 +287,15 @@ class darkHadron():
         self.quarks.set(self.mass)
 
         self.dm = dm
+        self.setRinv(rinv)
+        self.auto_rinv = auto_rinv
+
+    def setRinv(self, rinv):
         self.rinv = rinv
         if self.rinv is None:
             self.rvis = 1
         else:
             self.rvis = 1 - self.rinv
-        self.auto_rinv = auto_rinv
 
     def getLines(self):
         lines = []
@@ -380,8 +391,8 @@ class darkHadron():
             sign2 = 1 if n > antiDarkQuarkFromRho else -1
             meson1 = sign1 * self.getDarkMeson(dq=n, adq=darkQuarkFromRho, spin=0)
             meson2 = sign2 * self.getDarkMeson(dq=n, adq=antiDarkQuarkFromRho, spin=0)
-            # etaPrime taken to be heavy (probKeepEta1=0), so exclude from allowed decays
-            if abs(meson1)==etaPrime or abs(meson2)==etaPrime:
+            # if etaPrime taken to be heavy (probKeepEta1=0), exclude from allowed decays
+            if not self.helper.keepEta1 and (abs(meson1)==etaPrime or abs(meson2)==etaPrime):
                 continue
             allowed.append(
                 (meson1, meson2)
@@ -443,9 +454,11 @@ class darkHadron():
 
 class hvSpectrum():
     def __init__(self, name, helper):
-        self.customLines = []
-        self.darkHadrons = []
         self.helper = helper
+        self.customLines = []
+        self.darkGluons = [4900021]
+        self.darkQuarks = [int(f'490010{i}') for i in range(1, self.helper.Nf+1)]
+        self.darkHadrons = []
 
         if not hasattr(self, name+'Spectrum'):
             raise ValueError("unknown spectrum {}".format(name))
@@ -455,12 +468,12 @@ class hvSpectrum():
     def quarkLines(self):
         return [
             # fermionic dark quark
-            '4900101:m0 = {:g}'.format(self.helper.mq),
+            f'4900101:m0 = {self.helper.mq:g}',
             # define missing antiparticles
             '4900111:antiName = pivDiagbar',
             '4900113:antiName = rhovDiagbar',
             # disable eta prime production: Nf^2-1 accessible states
-            'HiddenValley:probKeepEta1 = 0',
+            f'HiddenValley:probKeepEta1 = {int(self.helper.keepEta1)}',
         ]
 
     # helper for common dark quark/hadron lines in separateFlav setup
@@ -468,11 +481,11 @@ class hvSpectrum():
         lines = [
             'HiddenValley:separateFlav = on',
             # disable eta prime production: Nf^2-1 accessible states
-            'HiddenValley:probKeepEta1 = 0',
+            f'HiddenValley:probKeepEta1 = {int(self.helper.keepEta1)}',
         ]
         # for separateFlav=on, set masses of all the dark quarks
-        for i in range(1, self.helper.Nf+1):
-            lines.append('490010{:d}:m0 = {:g}'.format(i, self.helper.mq))
+        for dq in self.darkQuarks:
+            lines.append(f'{dq}:m0 = {self.helper.mq:g}')
 
         return lines
 
@@ -606,10 +619,8 @@ class hvChannel():
         ]
 
         # divide up Z' BF between the Nf quarks
-        dark_quarks = []
-        for i in range(1, self.helper.Nf+1):
-            dq = f'490010{i}'
-            dark_quarks.append(dq)
+        darkQuarks = self.helper.spectrumHelper.darkQuarks
+        for i,dq in enumerate(darkQuarks):
             if i==1: line = f'{self.mediatorID}:oneChannel = 1 {Bchi:3f} 102 {dq} -{dq}'
             else: line = f'{self.mediatorID}:addChannel = 1 {Bchi:3f} 102 {dq} -{dq}'
             self.customLines.append(line)
@@ -622,7 +633,7 @@ class hvChannel():
         # only save events with Zprime -> dark quarks
         self.customLines.extend([
             f'{self.mediatorID}:onMode = off',
-            f'{self.mediatorID}:onIfAny = {" ".join(dark_quarks)}',
+            f'{self.mediatorID}:onIfAny = {" ".join([f"{dq}" for dq in darkQuarks])}',
         ])
 
         # decouple t-channel mediator particles
@@ -673,16 +684,18 @@ class baseHelper():
             return ids + [-1*id for id in ids]
 
         def pdg_lines(ids):
-            return ["  add PdgCode {{{}}}".format(id) for id in ids]
+            return '\n'.join(["  add PdgCode {{{}}}".format(id) for id in ids])
 
         HVEnergyFractions = '\n'.join(["  add EnergyFraction {{{}}} {{0}}".format(id) for id in self.stableIDs])
         stableIDs_with_neg = add_neg(self.stableIDs)
-        HVNuFilter = '\n'.join(pdg_lines(stableIDs_with_neg))
+        HVNuFilter = pdg_lines(stableIDs_with_neg)
         HVDaughterFilter = HVNuFilter.replace("PdgCode", "PdgDaughter")
         darkHadronIDs_with_neg = add_neg(self.darkHadronIDs)
-        HVDarkHadronFilter = '\n'.join(pdg_lines(darkHadronIDs_with_neg))
+        HVDarkHadronFilter = pdg_lines(darkHadronIDs_with_neg)
         darkHadronFinalIDs_with_neg = add_neg(self.darkHadronFinalIDs)
-        HVDarkHadronFinalFilter = '\n'.join(pdg_lines(darkHadronFinalIDs_with_neg))
+        HVDarkHadronFinalFilter = pdg_lines(darkHadronFinalIDs_with_neg)
+        darkPartonIDs_with_neg = add_neg(self.darkPartonIDs)
+        HVDarkPartonFilter = pdg_lines(darkPartonIDs_with_neg)
 
         with input.open() as infile:
             old_lines = Template(infile.read())
@@ -692,6 +705,7 @@ class baseHelper():
                 HVDarkHadronFilter = HVDarkHadronFilter,
                 HVDaughterFilter = HVDaughterFilter,
                 HVDarkHadronFinalFilter = HVDarkHadronFinalFilter,
+                HVDarkPartonFilter = HVDarkPartonFilter,
             )
         return new_lines
 
@@ -715,6 +729,7 @@ class svjHelper(baseHelper):
 
     def __init__(self,args):
         super().__init__(args)
+        self.keepEta1 = False
 
         # sanity checks
         if self.mrho is None: self.mrho = self.mpi
@@ -722,12 +737,7 @@ class svjHelper(baseHelper):
             if self.rinv<0 or self.rinv>1:
                 raise ValueError(f'rinv {self.rinv} not allowed (0 <= rinv <= 1)')
         if self.Nf is not None and self.Ns is not None:
-            self.rinvpred = fcdc_rinv(Nf = self.Nf, Ns = self.Ns)
-
-        # set up production channel
-        self.channelHelper = hvChannel(self.channel, self)
-        self.channelLines = self.channelHelper.customLines
-        self.mediatorID = self.channelHelper.mediatorID
+            self.rinvpred = fcdc_rinv(Nf = self.Nf, Ns = self.Ns, keepEta1 = self.keepEta1)
 
         # set up spectrum
         self.spectrumHelper = hvSpectrum(self.spectrum, self)
@@ -736,6 +746,13 @@ class svjHelper(baseHelper):
         self.darkHadronIDs = [dh.id for dh in self.spectrumParticles if not dh.placeholder]
         self.darkHadronFinalIDs = [dh.id for dh in self.spectrumParticles if not dh.placeholder and 'darkRho' not in dh.decay]
         self.stableIDs = [dh.id for dh in self.spectrumParticles if dh.decay=='stable']
+
+        # set up production channel
+        self.channelHelper = hvChannel(self.channel, self)
+        self.channelLines = self.channelHelper.customLines
+        self.mediatorID = self.channelHelper.mediatorID
+        self.darkQuarkIDs = self.spectrumHelper.darkQuarks
+        self.darkPartonIDs = self.darkQuarkIDs + self.spectrumHelper.darkGluons
 
         # metadata tracking
         self.always_included = ["channel","mmed","Nc","Nf","scale","mq","mpi","mrho","pvector","spectrum","gq","gchi"]
@@ -760,15 +777,17 @@ class svjHelper(baseHelper):
     def metadata(self):
         metadict = {param:getattr(self,param) for param in self.always_included}
         metadict.update({param:getattr(self,param) for param in self.maybe_included+self.meta_included if getattr(self,param,None) is not None})
+        metadict["darkQuarkIDs"] = self.darkQuarkIDs
+        metadict["darkPartonIDs"] = self.darkPartonIDs
         metadict["stableIDs"] = self.stableIDs
         metadict["darkHadronIDs"] = self.darkHadronIDs
         metadict["darkHadronFinalIDs"] = self.darkHadronFinalIDs
         if self.rinv is not None:
             if self.mrho < 2*self.mpi:
-                metadict["rinv_3body"] = fcdc_rinv_3body_simp(rinv=self.rinv, Nf=self.Nf, mrho=self.mrho, mpi=self.mpi, pvector=self.pvector)
+                metadict["rinv_3body"] = fcdc_rinv_3body_simp(rinv=self.rinv, Nf=self.Nf, mrho=self.mrho, mpi=self.mpi, pvector=self.pvector, keepEta1=self.keepEta1)
         if self.Ns is not None:
             if self.mrho < 2*self.mpi:
-                metadict["rinvpred_3body"] = fcdc_rinv_3body(Nf=self.Nf, Ns=self.Ns, mrho=self.mrho, mpi=self.mpi, pvector=self.pvector)
+                metadict["rinvpred_3body"] = fcdc_rinv_3body(Nf=self.Nf, Ns=self.Ns, mrho=self.mrho, mpi=self.mpi, pvector=self.pvector, keepEta1=self.keepEta1)
         return metadict
 
     def getPythiaSettings(self):
@@ -794,6 +813,8 @@ class extHelper(baseHelper):
     @staticmethod
     def add_arguments(parser):
         parser.add_argument("--card", type=str, required=True, help="external Pythia card")
+        parser.add_argument("--darkQuarkIDs", type=int, nargs='*', default=[4900101], help="list of dark quark PDG IDs")
+        parser.add_argument("--darkGluonIDs", type=int, nargs='*', default=[4900021], help="list of dark gluon PDG IDs")
         parser.add_argument("--stableIDs", type=int, nargs='*', default=[], help="list of stable PDG IDs")
         parser.add_argument("--darkHadronIDs", type=int, nargs='*', default=[], help="list of dark hadron PDG IDs")
         parser.add_argument("--darkHadronFinalIDs", type=int, nargs='*', default=[], help="list of final dark hadron PDG IDs")
@@ -807,6 +828,8 @@ class extHelper(baseHelper):
 
     def metadata(self):
         metadict = {}
+        metadict["darkQuarkIDs"] = self.darkQuarkIDs
+        metadict["darkGluonIDs"] = self.darkQuarkIDs + self.darkGluonIDs
         metadict["stableIDs"] = self.stableIDs
         metadict["darkHadronIDs"] = self.darkHadronIDs
         metadict["darkHadronFinalIDs"] = self.darkHadronFinalIDs

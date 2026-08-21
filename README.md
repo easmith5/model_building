@@ -31,8 +31,9 @@ Important software versions:
 * coffea 2025.12.0
 * uproot 5.7.5
 * awkward 2.10.0
+* vector 1.8.1
 * matplotlib 3.11.0
-* mplhep 1.3.2
+* mplhep 1.3.3
 
 ## Predefined model configurations
 
@@ -55,8 +56,8 @@ This command will, in order:
 4. run Delphes
 5. make histograms
 
-If the `--steps` command is omitted, items 3, 4, and 5 will be skipped.
-Items 3, 4, and 5 can be run separately by specifying just one of them in `--steps`.
+If the `--steps` command is omitted, items 3, 4, and 5 will be skipped (the default is just to generate the cards).
+Items 2, 3, 4, and 5 can be run separately by specifying just one of them in `--steps`.
 
 The input model configuration can be modified using command-line arguments, and the resulting configuration file will be generated along with the Pythia and Delphes cards.
 
@@ -70,6 +71,7 @@ An external Pythia card can be used (instead of generating a model by providing 
 ```
 
 As shown, the lists of stable particle IDs, dark hadron IDs, and final dark hadron IDs must be provided manually in order for the Delphes output to be correct.
+The lists of dark quark and dark gluon IDs (via `--darkQuarkIDs` and `--darkGluonIDs`) should also be updated if relevant; the default values are `[4900101]` and `[4900021]`, respectively.
 (The argument `--pythia ''` prevents appending common settings to the Pythia card, which are included by default.)
 
 ## Analysis

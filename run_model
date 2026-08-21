@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, fileinput, subprocess, shlex, shutil, gzip
+import os, sys, fileinput, subprocess, shlex, shutil, gzip, pickle
 from pathlib import Path
 from contextlib import nullcontext
 from copy import deepcopy
@@ -48,10 +48,10 @@ def pythia_handlers():
 if __name__=="__main__":
     _parser_common = ArgumentParser(add_help=False)
 
-    allowed_steps = ['pythia','delphes','hist']
+    allowed_steps = ['cards','pythia','delphes','hist']
 
     common = _parser_common.add_argument_group("common")
-    common.add_argument("--steps", type=str, nargs='*', default=[], choices=allowed_steps+['all'], help="run these steps")
+    common.add_argument("--steps", type=str, nargs='*', default=['cards'], choices=allowed_steps+['all'], help="run these steps")
     common.add_argument("--events", type=int, default=0, help="generate this many events in Pythia")
     print_group = common.add_mutually_exclusive_group()
     print_group.add_argument("--verbose", default=False, action="store_true", help="increase verbosity of printouts")
@@ -113,29 +113,38 @@ if __name__=="__main__":
     parser.write_config(args_orig,config_fname)
     if args["common"].verbose: print(f'wrote {config_fname}')
 
-    pythia_lines = helper.getPythiaSettings()
-    pythia_helpers = pythia_handlers()
-    if 'pythia' in args["common"].steps:
-        pythia_lines.append('Main:numberOfEvents = {}'.format(args["common"].events))
-    pythia_fname = "pythia_card.txt"
-    with open(pythia_fname,'w') as file, (fileinput.input(args["common"].pythia) if len(args["common"].pythia)>0 else nullcontext()) as inputs:
-        file.write('\n'.join(pythia_lines))
-        file.write('\n')
-        if inputs is not None:
-            for line in inputs:
-                file.write(pythia_helpers["card_formatter"](line))
-    if args["common"].verbose: print(f'wrote {pythia_fname}')
-
-    delphes_lines = helper.getDelphesSettings(args["common"].delphes)
-    delphes_fname = "delphes_card.txt"
-    with open(delphes_fname,'w') as file:
-        file.write(delphes_lines)
-    if args["common"].verbose: print(f'wrote {delphes_fname}')
-
     # intermediate output filenames
     hepmc_fname = "events.hepmc"
     hepmc_fname_gz = hepmc_fname+".gz"
     root_fname = "events.root"
+
+    if 'cards' in args["common"].steps:
+        # step 0: generate cards
+        pythia_lines = helper.getPythiaSettings()
+        pythia_helpers = pythia_handlers()
+        if 'pythia' in args["common"].steps:
+            pythia_lines.append('Main:numberOfEvents = {}'.format(args["common"].events))
+        pythia_fname = "pythia_card.txt"
+        with open(pythia_fname,'w') as file, (fileinput.input(args["common"].pythia) if len(args["common"].pythia)>0 else nullcontext()) as inputs:
+            file.write('\n'.join(pythia_lines))
+            file.write('\n')
+            if inputs is not None:
+                for line in inputs:
+                    file.write(pythia_helpers["card_formatter"](line))
+        if args["common"].verbose: print(f'wrote {pythia_fname}')
+
+        delphes_lines = helper.getDelphesSettings(args["common"].delphes)
+        delphes_fname = "delphes_card.txt"
+        with open(delphes_fname,'w') as file:
+            file.write(delphes_lines)
+        if args["common"].verbose: print(f'wrote {delphes_fname}')
+
+        # fill metadata dict from helper
+        meta_dict = helper.metadata()
+        meta_fname = "Meta.pkl"
+        with open(meta_fname, "wb") as out:
+            pickle.dump(meta_dict, out)
+        if args["common"].verbose: print(f'wrote metadata in {meta_fname}')
 
     if 'pythia' in args["common"].steps:
         # step 1: pythia

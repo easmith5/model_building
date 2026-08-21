@@ -159,6 +159,7 @@ if __name__=="__main__":
     qtys_default = [
         'stable_invisible_fraction',
         'alpha_3body',
+        'kappa',
         'DHIVJet12_rinv_proj',
         'DiDHIVJet_rinv_proj',
         'DHIVJet12_rinv_proj_global',
