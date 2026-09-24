@@ -38,14 +38,14 @@ def calc_axis1_axis2(jet):
     # Calculate weights (pt^2) for each constituent
     weights_pt = jet_constpt**2
 
-    # Calculate weighted sums for each event
-    sum_weight = ak.sum(weights_pt, axis=1)  # Sum of weights (pt^2) for each event
+    # Calculate weighted sums for each jet
+    sum_weight = ak.sum(weights_pt, axis=-1)  # Sum of weights (pt^2) for each jet
 
-    sum_deta = ak.sum(deta_particle * weights_pt, axis=1)
-    sum_dphi = ak.sum(dphi_particle * weights_pt, axis=1)
-    sum_deta2 = ak.sum(deta_particle**2 * weights_pt, axis=1)
-    sum_dphi2 = ak.sum(dphi_particle**2 * weights_pt, axis=1)
-    sum_detadphi = ak.sum(deta_particle * dphi_particle * weights_pt, axis=1)
+    sum_deta = ak.sum(deta_particle * weights_pt, axis=-1)
+    sum_dphi = ak.sum(dphi_particle * weights_pt, axis=-1)
+    sum_deta2 = ak.sum(deta_particle**2 * weights_pt, axis=-1)
+    sum_dphi2 = ak.sum(dphi_particle**2 * weights_pt, axis=-1)
+    sum_detadphi = ak.sum(deta_particle * dphi_particle * weights_pt, axis=-1)
 
     # Calculate averages
     ave_deta = sum_deta / sum_weight
@@ -58,10 +58,10 @@ def calc_axis1_axis2(jet):
     b = ave_dphi2 - ave_dphi**2
     c = -(sum_detadphi / sum_weight - ave_deta * ave_dphi)
 
-    # Calculate the discriminant (delta) for each event
+    # Calculate the discriminant (delta) for each jet
     delta = np.sqrt(np.abs((a - b)**2 + 4 * c**2))
 
-    # Calculate axis1 (major) and axis2 (minor) for each event
+    # Calculate axis1 (major) and axis2 (minor) for each jet
     axis1 = np.sqrt(0.5 * (a + b + delta))
     axis2 = np.sqrt(0.5 * (a + b - delta))
 
@@ -84,7 +84,9 @@ def fj_cluster_sequence(jets):
 def getLundMultiplicity(cluster_seq, kt = 1):
     # Retrieve the primary Lund-plane declusterings for the single jet and apply kt cut
     lund = cluster_seq.exclusive_jets_lund_declusterings(njets=1)
-    kt_values = ak.flatten(lund)[:]["kt"]
+    # firsts, not flatten: both strip the njets=1 axis, but flatten drops padded
+    # None jets entirely, which breaks the unflatten back to (event, jet)
+    kt_values = ak.firsts(lund)["kt"]
     mult = ak.sum(kt_values > kt, axis=-1)
     return mult
 
@@ -395,6 +397,10 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
     output = {}
     meta_dict = {}
 
+    # substructure settings, shared by the reco block and the dhj_pre loop below
+    kt_cuts = [1,2,5,10]
+    n_ecf = [2,3]
+
     # get rid of None Events
     mask2 = ~ak.is_none(events.Event.Number)
     events = events[mask2]
@@ -433,8 +439,6 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
         events["DeltaPhi_MET_Jet12"] = np.abs(events.MissingET.deltaphi(events["Jet12"]))
 
         # add substructure quantities
-        kt_cuts = [1,2,5,10]
-        n_ecf = [2,3]
         if with_constituents:
             events["Jet12_girth"] = calculate_girth(events["Jet12"])
             events["Jet12_ptD"] = calculate_ptD(events["Jet12"])
@@ -527,9 +531,19 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
         for pre in dhj_pre:
             print(f"\n{pre}Jet")
 
-            # also compute nconst and girth
+            # also compute substructure quantities (same set as reco, above)
             events[f"{pre}Jet12_girth"] = calculate_girth(events[f"{pre}Jet12"])
+            events[f"{pre}Jet12_ptD"] = calculate_ptD(events[f"{pre}Jet12"])
             events[f"{pre}Jet12_nconst"] = ak.num(events[f"{pre}Jet12"].Constituents, axis=-1)
+            events[f"{pre}Jet12_majoraxis"], events[f"{pre}Jet12_minoraxis"] = calc_axis1_axis2(events[f"{pre}Jet12"])
+
+            # one re-clustering per collection, shared by Lund multiplicity and ECF
+            jet12_shape = ak.num(events[f"{pre}Jet12"], axis=1)
+            cs = fj_cluster_sequence(ak.flatten(events[f"{pre}Jet12"], axis=1))
+            for k in kt_cuts:
+                events[f"{pre}Jet12_lundMult{k}"] = ak.unflatten(getLundMultiplicity(cs, kt = k), jet12_shape)
+            for n in n_ecf:
+                events[f"{pre}Jet12_ECF{n}"] = ak.unflatten(getECF(cs, npointECF = n), jet12_shape)
 
             # pt-weighted percentile per jet
             # scalar sum of constituent pT within DeltaR / scalar sum of all constituent pT = "jet shape"
@@ -549,9 +563,9 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
                 events[f"{pre}Jet12_radius{pct}"] = ak.pad_none(ak.firsts(sorted_prop[mask_pt].dr, axis=-1), target=2, axis=1)
                 for ind,key in zip(jet_inds, jet_ind_keys):
                     r_pct_pt = events[f"{pre}Jet12_radius{pct}"][:, ind]
-                    meta_dict[f"DHJet{key}_radius{pct}"] = fill_stats(r_pct_pt)
+                    meta_dict[f"{pre}Jet{key}_radius{pct}"] = fill_stats(r_pct_pt)
                 print(f"{pct}% radius (jet shape):", ", ".join(
-                    [f"{meta_dict[f'DHJet{key}_radius{pct}']['mean']:.2} ({meta_dict[f'DHJet{key}_radius{pct}']['stdev']:.2})" for key in jet_ind_keys]
+                    [f"{meta_dict[f'{pre}Jet{key}_radius{pct}']['mean']:.2} ({meta_dict[f'{pre}Jet{key}_radius{pct}']['stdev']:.2})" for key in jet_ind_keys]
                 ))
 
     # dark parton/hadron jet mass and pt
@@ -633,7 +647,7 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
             for n in n_ecf:
                 label = f'$C_{n}^{{\\beta=1}}$'
                 hist_dict.update(chain.from_iterable([
-                    fill_hist(f'Jet12_ECF{n}',30,0,0.3,label)
+                    fill_hist(f'Jet12_ECF{n}',300,0,0.3,label)
                 ]))
 
         for t in events.fields:
@@ -687,8 +701,19 @@ def histogram(filename, helper, with_constituents=True, gen_only=False, debug=Fa
                 fill_hist(f"{pre}Jet12_radius95",50,0,2,r"${\Delta}R_{95}(J_{JETIND}^{\text{"+label+"}})$"),
                 fill_hist(f"{pre}Jet12_radius99",50,0,2,r"${\Delta}R_{99}(J_{JETIND}^{\text{"+label+"}})$"),
                 fill_hist(f"{pre}Jet12_girth",50,0,1,r"$g_{\text{jet}}(J_{JETIND}^{\text{"+label+"}})$"),
+                fill_hist(f"{pre}Jet12_ptD",50,0,1.01,r"$D_{p_{\text{T}}}(J_{JETIND}^{\text{"+label+"}})$"),
                 fill_hist(f"{pre}Jet12_nconst",nbin,-0.5,nmax,r"$n_{\text{const}}(J_{JETIND}^{\text{"+label+"}})$"),
+                fill_hist(f"{pre}Jet12_majoraxis",50,0,0.5,r"$\sigma_{\text{major}}(J_{JETIND}^{\text{"+label+"}})$"),
+                fill_hist(f"{pre}Jet12_minoraxis",50,0,0.5,r"$\sigma_{\text{minor}}(J_{JETIND}^{\text{"+label+"}})$"),
             ]))
+            for k in kt_cuts:
+                hist_dict.update(chain.from_iterable([
+                    fill_hist(f"{pre}Jet12_lundMult{k}",12,0,12,f"Primary Lund Multiplicity $k_T>{k}$ GeV "+r"$(J^{\text{"+label+"}})$")
+                ]))
+            for n in n_ecf:
+                hist_dict.update(chain.from_iterable([
+                    fill_hist(f"{pre}Jet12_ECF{n}",300,0,0.3,f"$C_{n}^{{\\beta=1}}$"+r"$(J^{\text{"+label+"}})$")
+                ]))
 
     # finish output dictionary
     output["hist"] = hist_dict
