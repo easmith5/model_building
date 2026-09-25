@@ -28,7 +28,7 @@ done
 
 PKGS=(
 magiconfig \
-fastjet \
+fastjet== \
 )
 
 for PKG in ${PKGS[@]}; do
