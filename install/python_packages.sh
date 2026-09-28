@@ -9,6 +9,7 @@ chmod +x lcg-venv
 
 cat << 'EOF' > mb_init.sh
 source ${MODEL_BUILDING}/install/python_packages/mbenv/bin/activate
+export LD_LIBRARY_PATH="${MODEL_BUILDING}/install/python_packages/mbenv/lib/python3.11/site-packages/fastjet/lib64:${LD_LIBRARY_PATH}"
 EOF
 
 source mb_init.sh
@@ -28,7 +29,7 @@ done
 
 PKGS=(
 magiconfig \
-fastjet== \
+fastjet \
 )
 
 for PKG in ${PKGS[@]}; do
