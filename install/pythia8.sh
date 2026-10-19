@@ -6,18 +6,30 @@ if [ "$PYTHIA8MINOR" -ge 12 ]; then
 	PYTHIA_EXE=main132
 fi
 
-if [ ! -d pythia8 ] || [[ "$PYTHIA8MINOR" != "$(source pythia8/mb_init.sh && echo "$PYTHIA8MINOR")" ]]; then
-	rm -rf pythia8
+# move an old unversioned install to its versioned location
+if [ -d pythia8 ] && [ ! -L pythia8 ]; then
+	if [ -f pythia8/mb_init.sh ]; then
+		OLD_VERSION=pythia83$(source pythia8/mb_init.sh && echo "$PYTHIA8MINOR")
+		mv pythia8 ${OLD_VERSION}
+		sed -i "s|/install/pythia8$|/install/${OLD_VERSION}|" ${OLD_VERSION}/mb_init.sh
+	else
+		# incomplete install
+		rm -rf pythia8
+	fi
+fi
+
+if [ ! -d ${PYTHIA_VERSION} ]; then
 	wget "https://pythia.org/releases/pythia83/${PYTHIA_VERSION}.tgz"
 	if [ ! -e ${PYTHIA_VERSION}.tgz ]; then
 		echo "Failed to download pythia"
 		exit 1
 	fi
 	tar -xzf ${PYTHIA_VERSION}.tgz
-	mv ${PYTHIA_VERSION} pythia8
 	rm ${PYTHIA_VERSION}.tgz
 fi
-cd pythia8
+# make this version the default
+ln -sfn ${PYTHIA_VERSION} pythia8
+cd ${PYTHIA_VERSION}
 
 HEPMC_BASE=(/cvmfs/sft.cern.ch/lcg/releases/${LCG_VIEW}/hepmc3/*/${LCG_ARCH})
 LHAPDF_BASE=(/cvmfs/sft.cern.ch/lcg/releases/${LCG_VIEW}/MCGenerators/lhapdf/*/${LCG_ARCH})
@@ -31,7 +43,7 @@ make ${PYTHIA_EXE}
 )
 
 cat << EOF > mb_init.sh
-export PYTHIA8=\${MODEL_BUILDING}/install/pythia8
+export PYTHIA8=\${MODEL_BUILDING}/install/${PYTHIA_VERSION}
 export PATH=\${PYTHIA8}/bin/:\${PATH}
 export LD_LIBRARY_PATH=\${PYTHIA8}/lib/:\${LD_LIBRARY_PATH}
 export PYTHIA8DATA=\$(pythia8-config --xmldoc)
